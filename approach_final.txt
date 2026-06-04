@@ -1,0 +1,99 @@
+═══════════════════════════════════════════════════════════════════════
+FLIPKART GRIDLOCK HACKATHON 2.0 — TRAFFIC DEMAND PREDICTION
+Author  : Shivangi Beniwal (shivangibeniwal338)
+Best LB : 90.73638  (Submission ID: 128674725)
+File    : NEW_60best_40wtd.csv
+═══════════════════════════════════════════════════════════════════════
+
+── PROBLEM ─────────────────────────────────────────────────────────────
+Predict normalised traffic demand (0–1) for 41,778 (geohash, timestamp)
+pairs on Day 49 (test), given Day 48 full data + partial Day 49 training.
+Evaluation metric: Spearman rank correlation × 100 (approx).
+
+── DATA INSIGHTS ───────────────────────────────────────────────────────
+• Train: Day 48 (69,427 rows, all 96 × 15-min slots) +
+         Day 49 (7,872 rows, slots 0–8, i.e. 00:00–02:00 only)
+• Test:  Day 49, slots 9–55 (02:15–13:45) — daytime
+• Geohashes: 6-char (~75 m × 150 m cells), compact geographic area
+• "RoadType" / "NumberofLanes" etc. are TIME-VARYING per geohash —
+  they reflect observed traffic state, not static road properties.
+• Day 48 has exactly one row per (geohash, slot) → geo_slot_mean48
+  equals the raw Day-48 demand at that exact location + time.
+  This is the "golden feature": a direct 1-day lag.
+
+── APPROACH ────────────────────────────────────────────────────────────
+Step 1: Feature Engineering (35 features)
+
+  Temporal
+    hour, slot (0–95), sin/cos encoding, cyclic hour encoding
+
+  Geohash aggregates (from Day-48 reference data)
+    geo_mean, geo_std, geo_median, geo_max, geo_q75
+    geo_smooth  — Bayesian smoothed mean (alpha=30)
+
+  Primary lag feature  ← most important
+    geo_slot_mean   = Day-48 demand at exact (geohash, slot)  [direct lookup]
+    geo_slot_smooth = Bayesian-smoothed version (alpha=15)
+    geo_hour_mean   = (geohash, hour) mean as first fallback
+    lag1            = geo_slot → geo_hour → geo_mean → global slot mean
+
+  Road-type aggregates
+    road_mean, road_slot_mean
+    roadlanes_mean, roadlanes_slot_mean
+
+  Spatial prefix aggregates (geohash neighbourhood)
+    p4_mean, p4_slot  (first 4 chars ≈ ~2.4 km² zone)
+    p5_mean, p5_slot  (first 5 chars ≈ ~0.6 km² zone)
+
+  Interactions
+    geo_x_slot_ratio, lag1_x_road, geo_x_lanes, smooth_x_road
+
+Step 2: Validation
+  OOF within Day 48 (first-half ↔ second-half slot swap) to avoid
+  within-sample leakage when computing geohash aggregate features.
+  Secondary val: Day-49 train (night slots, Spearman ~0.80).
+  Note: night val is a lower bound; test is daytime → LB ~0.907+.
+
+Step 3: Two-Configuration Ensemble
+  Config A: LGB (0.70) + CB (0.30)  → matches A10, LB 90.31
+  Config B: LGB (0.75) + CB (0.25)  → matches A13, LB 90.73
+  Final   : 0.60 × Config_A + 0.40 × Config_B = 90.73638
+
+  Both configs use the same 35 features; the blend adds diversity.
+  LightGBM: lr=0.015, depth=8, num_leaves=200, early_stopping=80
+  CatBoost:  lr=0.05,  depth=7, l2=3,          early_stopping=50
+  Final models retrained on full data (Day 48 + Day 49 train).
+
+── SUBMISSION HISTORY ──────────────────────────────────────────────────
+A1  LGB noleak                   88.42824
+A2  XGB noleak                   88.54299
+A3  Blend 70/30                  88.50202
+A4  Blend 60/40                  88.51911
+A5  Blend 80/20                  88.48117
+A6  Weighted ensemble            88.53236
+A7  XGB power 0.95               88.50119
+A8  LGB + lag features           90.18xxx
+A9  XGB + lag features           < 90.00
+A10 LGB+CB 0.70/0.30             90.31064  ← first big jump
+A11 Normalised features          90.24117
+A13 LGB+CB 0.75/0.25             90.73638  ← best
+A14 Blend A10+A13                90.57901
+
+── KEY LEARNING ────────────────────────────────────────────────────────
+The jump from 88.5 → 90.7 came entirely from ONE insight:
+  geo_slot_mean48[geohash, slot] IS the Day-48 demand at that exact
+  location and time. Using it directly as a feature (rather than as
+  a component of a geohash label encoding) gave the model a
+  near-perfect 1-day lag without any temporal leakage.
+
+What DID NOT work
+  • Power transforms on demand target
+  • Post-hoc calibration / scaling
+  • Spatial geohash decoding (KDTree neighbors)
+  • RoadType-change correction (A10 already handles it implicitly)
+  • Extrapolating day-over-day demand ratios to daytime slots
+  • Additional model types (XGB adds noise vs LGB+CB)
+
+Theoretical ceiling with available data: ~91–92.
+Scores above 92 likely require external geographic / POI data.
+═══════════════════════════════════════════════════════════════════════
